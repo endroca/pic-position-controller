@@ -2,8 +2,9 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <math.h>
+#include <string.h>
 
-#define _XTAL_FREQ = 1000000;
+//#define _XTAL_FREQ = 1000000;
 
 /*********************Definition of Ports********************************/
 
@@ -11,7 +12,8 @@
 #define EN LATB1  /*PIN 1 of PORTB is assigned for enable Pin of LCD */
 #define ldata LATB  /*PORTB(PB4-PB7) is assigned for LCD Data Output*/ 
 #define LCD_Port TRISB  /*define macros for PORTB Direction Register*/
-
+#define F_CPU 8000000/64
+#define Baud_value (((float)(F_CPU)/(float)baud_rate)-1)
 
 /*********************Proto-Type Declaration*****************************/
 
@@ -23,33 +25,61 @@ void LCD_String(const char *); /*Display data string on LCD*/
 void LCD_String_xy(char, char, const char *);
 void LCD_Clear(); /*Clear LCD Screen*/
 int ADC_Read(int channel);
+void USART_Init(long);
+char USART_RxChar();
+void InitPWM();
 
 
-/*************** PID DEFINITION  *************/
-char output[6];
-char debounce = false;
+/*************** PARAMS  *************/
 
+// FOR RECEIVE DATA
+volatile char* buffer = "";
+
+
+// FOR LCD AND CONTROLLER
+char bufferLCD[6];
 float KP = 0.00;
 float KD = 0.00;
 float KI = 0.00;
 float SP = 0.00;
+float ER = 0.00;
+
+void __interrupt() ISR(void) {
+    if (PIE1bits.RCIE && RCIF) {
+        char receive = RCREG;
+
+        if (receive != ';') {
+            strcat(buffer, receive);
+        } else {
+            buffer = "";
+        }
+    }
+}
 
 int main(void) {
     // Use internal oscillator and set frequency to 8 MHz
-    // OSCCON = 0x72;
+    OSCCON = 0x72;
 
+    // ADC settings
     TRISA = 0xFF; //PortA A0-A7 = Input
     ADCON1bits.VCFG = 0x0; // INTERNAL REFERENCE
     ADCON1bits.PCFG = 0b1011; // only A0, A1, A2, A3
     ADCON2bits.ADFM = 1; // Right justified
     ADCON2bits.ADCS = 0b110; // FOSC/64
     ADCON2bits.ADCS = 0b001; // 8 TOSC
-
     ADRESH = 0; /* Flush ADC output Register */
     ADRESL = 0;
-
+    
+    
+    InitPWM();
+    CCPR1L = 50;    /* load 25% duty cycle value */
+    //CCPR2L = 100;	/* load 50% duty cycle value */
+    
     // Initialize LCD to 5*8 matrix in 4-bit mode
     LCD_Init();
+
+    // Initialize USART
+    USART_Init(9600);
 
     while (1) {
         KP = (float) ADC_Read(0) * 10 / 1023;
@@ -68,21 +98,42 @@ int main(void) {
          * Display PID constants
          */
         LCD_String_xy(1, 0, "Kp:");
-        sprintf(output, "%.3f", KP);
-        LCD_String_xy(1, 3, output);
+        sprintf(bufferLCD, "%.3f", KP);
+        LCD_String_xy(1, 3, bufferLCD);
 
-        LCD_String_xy(1, 8, "Kd:");
-        sprintf(output, "%.3f", KD);
-        LCD_String_xy(1, 11, output);
+        LCD_String_xy(2, 0, "Kd:");
+        sprintf(bufferLCD, "%.3f", KD);
+        LCD_String_xy(2, 3, bufferLCD);
 
-        LCD_String_xy(2, 0, "Ki:");
-        sprintf(output, "%.3f", KI);
-        LCD_String_xy(2, 3, output);
+        LCD_String_xy(3, 0, "Ki:");
+        sprintf(bufferLCD, "%.3f", KI);
+        LCD_String_xy(3, 3, bufferLCD);
 
-        LCD_String_xy(2, 8, "SP:");
-        sprintf(output, "%.3f", SP);
-        LCD_String_xy(2, 11, output);
+        LCD_String_xy(4, 0, "SP:");
+        sprintf(bufferLCD, "%.1f", SP);
+        LCD_String_xy(4, 3, bufferLCD);
+
+        LCD_String_xy(4, 9, "ER:");
+        sprintf(bufferLCD, "%.1f", ER);
+        LCD_String_xy(4, 12, bufferLCD);
     }
+}
+
+void InitPWM(){
+    TRISC1 = 0;		/* Set CCP2 pin as output for PWM out */
+    TRISC2 = 0;		/* Set CCP1 pin as output for PWM out */
+    PR2 = 199;		/* Load period value */
+    
+    /**** generate PWM on CCP1 ****/
+    CCP1CON = 0x0C;	/* Set PWM mode and no decimal for PWM */
+    
+    /**** generate PWM on CCP2 ****/
+    CCP2CON = 0x0C;	/* Set PWM mode and no decimal for PWM */    
+    
+    /*configure Timer 2 for PWM*/
+    T2CON = 0;		/* No pre-scalar, timer2 is off */
+    TMR2 = 0;		/* Clear Timer2 initially */
+    TMR2ON = 1;		/* Timer ON for start counting*/
 }
 
 int ADC_Read(int channel) {
@@ -151,12 +202,35 @@ void LCD_String(const char *msg) {
 
 void LCD_String_xy(char row, char pos, const char *msg) {
     char location = 0;
-    if (row <= 1) {
-        location = (0x80) | ((pos) & 0x0f); /*Print message on 1st row and desired location*/
-        LCD_Command(location);
-    } else {
-        location = (0xC0) | ((pos) & 0x0f); /*Print message on 2nd row and desired location*/
-        LCD_Command(location);
+
+    switch (row) {
+        case 1:
+        {
+            location = (0x80) | ((pos) & 0x0f);
+            LCD_Command(location);
+        }
+            break;
+
+        case 2:
+        {
+            location = (0xC0) | ((pos) & 0x0f);
+            LCD_Command(location);
+        }
+            break;
+
+        case 3:
+        {
+            location = (0x90) | ((pos) & 0x0f);
+            LCD_Command(location);
+        }
+            break;
+
+        case 4:
+        {
+            location = (0xD0) | ((pos) & 0x0f);
+            LCD_Command(location);
+        }
+            break;
     }
 
     LCD_String(msg);
@@ -171,4 +245,24 @@ void MSdelay(unsigned int val) {
     unsigned int i, j;
     for (i = 0; i < val; i++)
         for (j = 0; j < 165; j++); /*This count Provide delay of 1 ms for 8MHz Frequency */
+}
+
+void USART_Init(long baud_rate) {
+    float temp;
+    TRISC6 = 0; /* Make Tx pin as output*/
+    TRISC7 = 1; /* Make Rx pin as input*/
+    temp = Baud_value;
+    SPBRG = (int) temp; /* Baud rate=9600 SPBRG=(F_CPU /(64*9600))-1*/
+    //TXSTA = 0x20; /* TX enable; */
+    //RCSTA = 0x90; /* RX enable and serial port enable*/
+
+    TXSTAbits.SYNC = 0; //Setting Asynchronous Mode, ie UART
+    RCSTAbits.SPEN = 1; //Enables Serial Port
+    RCSTAbits.CREN = 1; //Enables Continuous Reception
+    TXSTAbits.TXEN = 0; //Disable Transmission
+
+    INTCONbits.GIE = 1; /* Enable Global Interrupt */
+    INTCONbits.PEIE = 1; /* Enable Peripheral Interrupt */
+    PIE1bits.RCIE = 1; /* Enable Receive Interrupt*/
+    PIE1bits.TXIE = 0; /* Disable Transmit Interrupt (not necessary)*/
 }

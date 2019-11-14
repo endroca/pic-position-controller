@@ -1,5 +1,6 @@
 #include <xc.h>
 #include <stdio.h>
+#include <string.h>
 
 #define F_CPU 8000000/64
 #define Baud_value (((float)(F_CPU)/(float)baud_rate)-1)
@@ -20,6 +21,7 @@ void __interrupt() ISR(void) {
         }
 
         sprintf(output, "%d", pulses);
+        strcat(output,";");
         USART_TxText(output);
 
         INTCON2bits.INTEDG0 ^= 1;
@@ -34,6 +36,7 @@ void __interrupt() ISR(void) {
         }
 
         sprintf(output, "%d", pulses);
+        strcat(output,";");
         USART_TxText(output);
 
         INTCON2bits.INTEDG1 ^= 1;
@@ -79,7 +82,7 @@ void USART_Init(long baud_rate) {
 
 /******************TRANSMIT FUNCTION*****************************************/
 void USART_TxChar(char out) {
-    while (TXIF == 0); /*wait for transmit interrupt flag*/
+    while (!TRMT);
     TXREG = out; /*transmit data via TXREG register*/
 }
 
