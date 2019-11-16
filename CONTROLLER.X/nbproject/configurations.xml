@@ -5,6 +5,9 @@
                    displayName="Header Files"
                    projectFiles="true">
       <itemPath>uart.h</itemPath>
+      <itemPath>header.h</itemPath>
+      <itemPath>b4x_types.h</itemPath>
+      <itemPath>b4x_switch.h</itemPath>
     </logicalFolder>
     <logicalFolder name="LinkerScript"
                    displayName="Linker Files"
