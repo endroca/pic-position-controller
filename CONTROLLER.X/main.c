@@ -2,8 +2,10 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "b4x_switch.h"
+
 
 /*********************Definition of Ports********************************/
 
@@ -11,7 +13,7 @@
 #define EN LATB1  /*PIN 1 of PORTB is assigned for enable Pin of LCD */
 #define ldata LATB  /*PORTB(PB4-PB7) is assigned for LCD Data Output*/ 
 #define LCD_Port TRISB  /*define macros for PORTB Direction Register*/
-#define F_CPU 8000000/64
+#define F_CPU _XTAL_FREQ/64
 #define Baud_value (((float)(F_CPU)/(float)baud_rate)-1)
 
 #define SW_PREV PORTDbits.RD0
@@ -28,16 +30,24 @@ void LCD_Char(unsigned char x); /*Send data to LCD*/
 void LCD_String(const char *); /*Display data string on LCD*/
 void LCD_String_xy(char, char, const char *);
 void LCD_Clear(); /*Clear LCD Screen*/
-int ADC_Read(int channel);
 void USART_Init(long);
-char USART_RxChar();
+unsigned char USART_RxChar();
+void USART_TxChar(unsigned char);
 void InitPWM();
+void actions(int page);
 
 
 /*************** PARAMS  *************/
 
-// FOR RECEIVE DATA
-volatile char* buffer = "";
+// FOR RECEIVE DATA USART
+volatile bool connectionEstablished = false;
+volatile bool toggle = false;
+volatile unsigned char buffer;
+
+volatile int encoderValue = 0;
+float ER = 0.00;
+
+// STRUCT OF CONTROLLER (FOR PID AND MANAGER PAGE)
 
 typedef struct {
     char* title;
@@ -49,46 +59,51 @@ typedef struct {
     bool continuousModeActivated;
     bool increment;
 } CONTROLLER;
-
-
-char bufferLCD[10];
 CONTROLLER controller[4];
-bool continous = false;
-float ER = 0.00;
 
+
+// BUFFER LCD
+char bufferLCD[16];
+char bufferFloat[10];
+// MANAGER CONTINOUS MODE IN BUTTON
+bool continous = false;
+
+// MANAGER PAGE
 int page = 0;
 int previousPage = 0;
 
 void __interrupt() ISR(void) {
     if (PIE1bits.RCIE && RCIF) {
-        char receive = RCREG;
+        unsigned char receive = USART_RxChar();
 
-        if (receive != ';') {
-            strcat(buffer, receive);
+        if (!connectionEstablished) {
+            if (receive == 97) {
+                connectionEstablished = true;
+                USART_TxChar('b');
+            }
         } else {
-            buffer = "";
+            if (!toggle) {
+                buffer = receive;
+                toggle = true;
+            } else {
+                encoderValue = (receive << 8) + (buffer << 0);
+                toggle = false;
+            }
         }
     }
 }
 
 int main(void) {
-    // Use internal oscillator and set frequency to 8 MHz
-    OSCCON = 0x72;
 
-    // ADC settings
-    TRISA = 0xFF; //PortA A0-A7 = Input
-    ADCON1bits.VCFG = 0x0; // INTERNAL REFERENCE
-    ADCON1bits.PCFG = 0b1110; // only A0
-    ADCON2bits.ADFM = 1; // Right justified
-    ADCON2bits.ADCS = 0b110; // FOSC/64
-    ADCON2bits.ADCS = 0b001; // 8 TOSC
-    ADRESH = 0; /* Flush ADC output Register */
-    ADRESL = 0;
-
-
+    /**
+     * MOTOR CONTROL
+     */
     InitPWM();
-    //CCPR1L = 50;    /* load 25% duty cycle value */
-    //CCPR2L = 100;	/* load 50% duty cycle value */
+    TRISCbits.RC0 = 0;
+    TRISCbits.RC1 = 0;
+
+
+
 
     // Initialize LCD to 5*8 matrix in 4-bit mode
     LCD_Init();
@@ -98,9 +113,6 @@ int main(void) {
 
     TRISDbits.RD2 = 1; // INCREMENT
     TRISDbits.RD3 = 1; // DECREMENT
-
-    // Initialize USART
-    USART_Init(9600);
 
 
     // Define PID
@@ -140,7 +152,28 @@ int main(void) {
     controller[3].min = 0;
     controller[3].continuousModeActivated = false;
     controller[3].increment = false;
+    // DT
+    controller[4].title = "Duty:";
+    controller[4].value = 0;
+    controller[4].max_increment = 5;
+    controller[4].min_increment = 1;
+    controller[4].max = 200;
+    controller[4].min = 0;
+    controller[4].continuousModeActivated = false;
+    controller[4].increment = false;
+    // DT
+    controller[5].title = "Direction:";
+    controller[5].value = 0;
+    controller[5].max_increment = 1;
+    controller[5].min_increment = 1;
+    controller[5].max = 1;
+    controller[5].min = 0;
+    controller[5].continuousModeActivated = false;
+    controller[5].increment = false;
 
+
+    // Initialize USART
+    USART_Init(9600);
 
     while (1) {
 
@@ -171,6 +204,8 @@ int main(void) {
 
             if (controller[page].value < controller[page].max) {
                 controller[page].value += controller[page].min_increment;
+
+                actions(page);
             }
 
             // INCREMENT CONTINUOS
@@ -195,6 +230,8 @@ int main(void) {
 
             if (controller[page].value > controller[page].min) {
                 controller[page].value -= controller[page].min_increment;
+
+                actions(page);
             }
 
             // DECREMENT CONTINOUS
@@ -239,42 +276,53 @@ int main(void) {
             __delay_ms(100);
         }
 
-        LCD_String_xy(1, 0, controller[page].title);
-        sprintf(bufferLCD, "%.3f", controller[page].value);
-        LCD_String_xy(1, 3, bufferLCD);
+        strcpy(bufferLCD, "");
+        strcat(bufferLCD, controller[page].title);
+        sprintf(bufferFloat, "%.3f", controller[page].value);
+        strcat(bufferLCD, bufferFloat);
+        LCD_String_xy(1, 0, bufferLCD);
+
+        if (page == 0) {
+            sprintf(bufferFloat, "%.3f", (float) encoderValue);
+            LCD_String_xy(2, 0, bufferFloat);
+        }
     }
 }
 
+void actions(int page) {
+    switch (page) {
+        case 4:
+            CCPR1L = controller[4].value;
+            break;
+        case 5:
+        {
+            if (controller[5].value == 1) {
+                PORTCbits.RC0 = 1;
+                PORTCbits.RC1 = 0;
+            } else {
+                PORTCbits.RC0 = 0;
+                PORTCbits.RC1 = 1;
+            }
+        }
+            break;
+    };
+}
+
 void InitPWM() {
-    TRISC1 = 0; /* Set CCP2 pin as output for PWM out */
-    TRISC2 = 0; /* Set CCP1 pin as output for PWM out */
+    TRISCbits.TRISC2 = 0; /* Set CCP1 pin as output for PWM out */
+
+    // x=(16000000/(5000*4*4) - 1)
     PR2 = 199; /* Load period value */
 
     /**** generate PWM on CCP1 ****/
     CCP1CON = 0x0C; /* Set PWM mode and no decimal for PWM */
+    //(199 + 1) x (duty_cicle/100)
+    CCPR1L = 0;
 
-    /**** generate PWM on CCP2 ****/
-    CCP2CON = 0x0C; /* Set PWM mode and no decimal for PWM */
-
-    /*configure Timer 2 for PWM*/
     T2CON = 0; /* No pre-scalar, timer2 is off */
+    T2CONbits.T2CKPS = 0b01; // 4 pre-scalar
     TMR2 = 0; /* Clear Timer2 initially */
     TMR2ON = 1; /* Timer ON for start counting*/
-}
-
-int ADC_Read(int channel) {
-    int digital;
-
-    /* Channel 0 is selected i.e.(CHS3CHS2CHS1CHS0=0000) & ADC is disabled */
-    ADCON0 = (ADCON0 & 0b11000011) | ((channel << 2) & 0b00111100);
-
-    ADCON0 |= ((1 << ADON) | (1 << GO)); /*Enable ADC and start conversion*/
-
-    /* Wait for End of conversion i.e. Go/done'=0 conversion completed */
-    while (ADCON0bits.GO_nDONE == 1);
-
-    digital = (ADRESH * 256) | (ADRESL); /*Combine 8-bit LSB and 2-bit MSB*/
-    return (digital);
 }
 
 /****************************Functions********************************/
@@ -362,16 +410,21 @@ void USART_Init(long baud_rate) {
     TRISC7 = 1; /* Make Rx pin as input*/
     temp = Baud_value;
     SPBRG = (int) temp; /* Baud rate=9600 SPBRG=(F_CPU /(64*9600))-1*/
-    //TXSTA = 0x20; /* TX enable; */
-    //RCSTA = 0x90; /* RX enable and serial port enable*/
-
-    TXSTAbits.SYNC = 0; //Setting Asynchronous Mode, ie UART
-    RCSTAbits.SPEN = 1; //Enables Serial Port
-    RCSTAbits.CREN = 1; //Enables Continuous Reception
-    TXSTAbits.TXEN = 0; //Disable Transmission
-
+    TXSTA = 0x20; /* TX enable; */
+    RCSTA = 0x90; /* RX enable and serial port enable*/
     INTCONbits.GIE = 1; /* Enable Global Interrupt */
     INTCONbits.PEIE = 1; /* Enable Peripheral Interrupt */
     PIE1bits.RCIE = 1; /* Enable Receive Interrupt*/
-    PIE1bits.TXIE = 0; /* Disable Transmit Interrupt (not necessary)*/
+    PIE1bits.TXIE = 0; /* Enable Transmit Interrupt*/
+}
+
+unsigned char USART_RxChar() {
+    while (!RCIF); //Wait till RCREG is full
+    return RCREG; //Return value in received data
+}
+
+/******************TRANSMIT FUNCTION*****************************************/
+void USART_TxChar(unsigned char out) {
+    TXREG = out; /*transmit data via TXREG register*/
+    while (!TRMT);
 }
