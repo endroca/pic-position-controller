@@ -63,7 +63,7 @@ float ER = 0.00;
 
 float integrate = 0.00;
 float lastError = 0.00;
-float dt = 0.25;
+float dt = 0.06;
 int minCCPR1L = 115;
 int inertial = 19;
 int inertialReverse = 19;
@@ -172,7 +172,7 @@ float PID(float error) {
         directionOfController = 'd';
     }
 
-    action = (200 - minCCPR1L) * abs(action) / 5 + minCCPR1L;
+    action = (200 - minCCPR1L) * abs(action) / ENCODER_RESOLUTION + minCCPR1L;
 
     if (stoppedMotor) {
         action += inertial;

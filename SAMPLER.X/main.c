@@ -102,13 +102,12 @@ void main() {
 
 
     T0CONbits.TMR0ON = 1; // Set on timer 0
-    T0CONbits.T08BIT = 0; // Set 16 Bits
+    T0CONbits.T08BIT = 1; // Set 8 Bits
     T0CONbits.T0CS = 0; // bit 5  TMR0 Clock Source Select bit...0 = Internal Clock (CLKO) 1 = Transition on T0CKI pin
     T0CONbits.T0SE = 0; // bit 4 TMR0 Source Edge Select bit 0 = low/high 1 = high/low
     T0CONbits.PSA = 0; // bit 3  Prescaler Assignment bit...0 = Prescaler is assigned to the Timer0
-    T0CONbits.T0PS = 0b001; // 1:4 Prescaler
-    TMR0 = 0; // preset for timer register 250 ms (sample time)
-
+    T0CONbits.T0PS = 0b111; // 1:256 Prescaler
+    TMR0 = 0; // preset for timer register 15hz (sample time)
 
 
     //TRISCbits.RC0 = 0;
