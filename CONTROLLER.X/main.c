@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "b4x_switch.h"
 
 
@@ -22,6 +23,8 @@
 #define SW_DECREMENT PORTDbits.RD3
 #define SW_INCREMENT PORTDbits.RD2
 
+#define ENCODER_RESOLUTION 910
+
 /*********************Proto-Type Declaration*****************************/
 
 void LCD_Init(); /*Initialize LCD*/
@@ -36,6 +39,8 @@ void USART_TxChar(unsigned char);
 void InitPWM();
 void actions(int page);
 
+float PID(float error);
+void setPID(bool value);
 
 /*************** PARAMS  *************/
 
@@ -44,10 +49,30 @@ volatile bool connectionEstablished = false;
 volatile bool toggle = false;
 volatile unsigned char buffer;
 
+
+/**
+ * PID
+ */
 volatile int encoderValue = 0;
+volatile bool enablePID = false;
+float SP = 50.00;
+float KP = 0.80;
+float KI = 0.00;
+float KD = 0.00;
 float ER = 0.00;
 
+float integrate = 0.00;
+float lastError = 0.00;
+float dt = 0.25;
+int minCCPR1L = 115;
+int inertial = 19;
+int inertialReverse = 19;
+char direction = 'd';
+
+bool stoppedMotor = false;
+
 // STRUCT OF CONTROLLER (FOR PID AND MANAGER PAGE)
+#define numberOfPages 10
 
 typedef struct {
     char* title;
@@ -59,7 +84,7 @@ typedef struct {
     bool continuousModeActivated;
     bool increment;
 } CONTROLLER;
-CONTROLLER controller[4];
+CONTROLLER controller[numberOfPages];
 
 
 // BUFFER LCD
@@ -86,11 +111,76 @@ void __interrupt() ISR(void) {
                 buffer = receive;
                 toggle = true;
             } else {
-                encoderValue = (receive << 8) + (buffer << 0);
+                int encoderValueReceive = (receive << 8) + (buffer << 0);
+
+                if (encoderValueReceive > encoderValue) {
+                    direction = 'd';
+                } else {
+                    direction = 'i';
+                }
+
+                if (encoderValueReceive == encoderValue) {
+                    stoppedMotor = true;
+                } else {
+                    stoppedMotor = false;
+                }
+
+                encoderValue = encoderValueReceive;
+
                 toggle = false;
+
+                if (enablePID) {
+                    float error = (float) SP * ENCODER_RESOLUTION / 360 - encoderValue;
+                    /*
+                    if (abs(error) <= ENCODER_RESOLUTION / 360) {
+                        error = 0;
+                    }
+                     */
+                    CCPR1L = (int) PID(error);
+                }
             }
         }
     }
+}
+
+void setPID(bool value) {
+    enablePID = value;
+    CCPR1L = 0;
+    integrate = 0.00;
+    lastError = 0.00;
+    stoppedMotor = false;
+}
+
+float PID(float error) {
+    integrate = integrate + KI * error * dt;
+    float derivate = KD * (error - lastError) / dt;
+    lastError = error;
+
+    float action = (KP * error) + integrate + derivate;
+
+    char directionOfController = '\0';
+
+    if (action < 0) {
+        // anticlockwise
+        PORTCbits.RC0 = 1;
+        PORTCbits.RC1 = 0;
+        directionOfController = 'i';
+    } else {
+        // clockwise
+        PORTCbits.RC0 = 0;
+        PORTCbits.RC1 = 1;
+        directionOfController = 'd';
+    }
+
+    action = (200 - minCCPR1L) * abs(action) / 5 + minCCPR1L;
+
+    if (stoppedMotor) {
+        action += inertial;
+    } else if (directionOfController != direction) {
+        action += inertialReverse;
+    }
+
+    return action;
 }
 
 int main(void) {
@@ -102,9 +192,6 @@ int main(void) {
     TRISCbits.RC0 = 0;
     TRISCbits.RC1 = 0;
 
-
-
-
     // Initialize LCD to 5*8 matrix in 4-bit mode
     LCD_Init();
 
@@ -114,11 +201,10 @@ int main(void) {
     TRISDbits.RD2 = 1; // INCREMENT
     TRISDbits.RD3 = 1; // DECREMENT
 
-
     // Define PID
     // SP
     controller[0].title = "SP:";
-    controller[0].value = 0;
+    controller[0].value = SP;
     controller[0].max_increment = 5;
     controller[0].min_increment = 1;
     controller[0].max = 359;
@@ -127,34 +213,34 @@ int main(void) {
     controller[0].increment = false;
     // KP
     controller[1].title = "KP:";
-    controller[1].value = 0;
+    controller[1].value = KP;
     controller[1].max_increment = 0.1;
-    controller[1].min_increment = 0.01;
+    controller[1].min_increment = 0.1;
     controller[1].max = 10;
     controller[1].min = 0;
     controller[1].continuousModeActivated = false;
     controller[1].increment = false;
     // KI
     controller[2].title = "KI:";
-    controller[2].value = 0;
+    controller[2].value = KI;
     controller[2].max_increment = 0.1;
-    controller[2].min_increment = 0.01;
+    controller[2].min_increment = 0.1;
     controller[2].max = 10;
     controller[2].min = 0;
     controller[2].continuousModeActivated = false;
     controller[2].increment = false;
     // KD
     controller[3].title = "KD:";
-    controller[3].value = 0;
+    controller[3].value = KD;
     controller[3].max_increment = 0.1;
-    controller[3].min_increment = 0.01;
+    controller[3].min_increment = 0.1;
     controller[3].max = 10;
     controller[3].min = 0;
     controller[3].continuousModeActivated = false;
     controller[3].increment = false;
     // DT
-    controller[4].title = "Duty:";
-    controller[4].value = 0;
+    controller[4].title = "CCPR1L:";
+    controller[4].value = CCPR1L;
     controller[4].max_increment = 5;
     controller[4].min_increment = 1;
     controller[4].max = 200;
@@ -170,6 +256,42 @@ int main(void) {
     controller[5].min = 0;
     controller[5].continuousModeActivated = false;
     controller[5].increment = false;
+    // PID ENABLE
+    controller[6].title = "Enable PID:";
+    controller[6].value = 0;
+    controller[6].max_increment = 1;
+    controller[6].min_increment = 1;
+    controller[6].max = 1;
+    controller[6].min = 0;
+    controller[6].continuousModeActivated = false;
+    controller[6].increment = false;
+    // Minimum CCPR1L
+    controller[7].title = "CCPR1Lmin:";
+    controller[7].value = minCCPR1L;
+    controller[7].max_increment = 1;
+    controller[7].min_increment = 1;
+    controller[7].max = 200;
+    controller[7].min = 0;
+    controller[7].continuousModeActivated = false;
+    controller[7].increment = false;
+    // GAIN Inertial
+    controller[8].title = "Inertial:";
+    controller[8].value = inertial;
+    controller[8].max_increment = 1;
+    controller[8].min_increment = 1;
+    controller[8].max = 200;
+    controller[8].min = 0;
+    controller[8].continuousModeActivated = false;
+    controller[8].increment = false;
+    // GAIN Inertial reverse 
+    controller[9].title = "Inertial rev:";
+    controller[9].value = inertialReverse;
+    controller[9].max_increment = 1;
+    controller[9].min_increment = 1;
+    controller[9].max = 200;
+    controller[9].min = 0;
+    controller[9].continuousModeActivated = false;
+    controller[9].increment = false;
 
 
     // Initialize USART
@@ -181,14 +303,14 @@ int main(void) {
 
         B4X_SW_nCLICK(SW_PREV) {
             B4X_SW_DEBOUNCE(SW_PREV);
-            page = page == 0 ? 3 : page--;
+            page = page == 0 ? (numberOfPages - 1) : page--;
         }
 
         // NEXT PAGE
 
         B4X_SW_nCLICK(SW_NEXT) {
             B4X_SW_DEBOUNCE(SW_NEXT);
-            page = page == 3 ? 0 : page++;
+            page = page == (numberOfPages - 1) ? 0 : page++;
         }
 
 
@@ -282,15 +404,29 @@ int main(void) {
         strcat(bufferLCD, bufferFloat);
         LCD_String_xy(1, 0, bufferLCD);
 
-        if (page == 0) {
-            sprintf(bufferFloat, "%.3f", (float) encoderValue);
-            LCD_String_xy(2, 0, bufferFloat);
-        }
+        sprintf(bufferLCD, "%.1f", (float) encoderValue);
+        LCD_String_xy(2, 0, bufferLCD);
+
+        sprintf(bufferLCD, "%.1f", ((float) encoderValue * 360 / ENCODER_RESOLUTION));
+        LCD_String_xy(2, 6, bufferLCD);
+
     }
 }
 
 void actions(int page) {
     switch (page) {
+        case 0:
+            SP = controller[0].value;
+            break;
+        case 1:
+            KP = controller[1].value;
+            break;
+        case 2:
+            KI = controller[2].value;
+            break;
+        case 3:
+            KD = controller[3].value;
+            break;
         case 4:
             CCPR1L = controller[4].value;
             break;
@@ -305,7 +441,21 @@ void actions(int page) {
             }
         }
             break;
+        case 6:
+            setPID(controller[6].value);
+            break;
+        case 7:
+            minCCPR1L = controller[7].value;
+            break;
+        case 8:
+            inertial = controller[8].value;
+            break;
+        case 9:
+            inertialReverse = controller[8].value;
+            break;
     };
+
+
 }
 
 void InitPWM() {

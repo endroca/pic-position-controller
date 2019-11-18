@@ -5,6 +5,7 @@
 
 #define F_CPU _XTAL_FREQ/64
 #define Baud_value (((float)(F_CPU)/(float)baud_rate)-1)
+#define ENCODER_RESOLUTION 910
 
 void USART_Init(long);
 unsigned char USART_RxChar();
@@ -23,6 +24,9 @@ void __interrupt() ISR(void) {
         int dataToSend = pulses;
         USART_TxChar(dataToSend & 0xFF);
         USART_TxChar((dataToSend >> 8) & 0xFF);
+        //PORTCbits.RC0 ^= 1;
+
+        TMR0 = 0;
         INTCONbits.TMR0IF = 0;
     }
 
@@ -40,9 +44,9 @@ void __interrupt() ISR(void) {
 
     if (INTCONbits.INT0IE && INTCONbits.INT0IF) {
         if ((!INTCON2bits.INTEDG0 && PORTBbits.RB1) || (INTCON2bits.INTEDG0 && !PORTBbits.RB1)) {
-            pulses = (pulses == 360) ? 1 : pulses++;
+            pulses = (pulses == ENCODER_RESOLUTION) ? 1 : pulses++;
         } else {
-            pulses = (pulses == 0) ? 359 : pulses--;
+            pulses = (pulses == 0) ? ENCODER_RESOLUTION : pulses--;
         }
 
         INTCON2bits.INTEDG0 ^= 1;
@@ -51,9 +55,9 @@ void __interrupt() ISR(void) {
 
     if (INTCON3bits.INT1IE && INTCON3bits.INT1IF) {
         if ((!INTCON2bits.INTEDG1 && PORTBbits.RB0) || (INTCON2bits.INTEDG1 && !PORTBbits.RB0)) {
-            pulses = (pulses == 0) ? 359 : pulses--;
+            pulses = (pulses == 0) ? ENCODER_RESOLUTION : pulses--;
         } else {
-            pulses = (pulses == 360) ? 1 : pulses++;
+            pulses = (pulses == ENCODER_RESOLUTION) ? 1 : pulses++;
         }
 
         INTCON2bits.INTEDG1 ^= 1;
@@ -98,13 +102,16 @@ void main() {
 
 
     T0CONbits.TMR0ON = 1; // Set on timer 0
-    T0CONbits.T08BIT = 1; // Set 8 Bits
+    T0CONbits.T08BIT = 0; // Set 16 Bits
     T0CONbits.T0CS = 0; // bit 5  TMR0 Clock Source Select bit...0 = Internal Clock (CLKO) 1 = Transition on T0CKI pin
     T0CONbits.T0SE = 0; // bit 4 TMR0 Source Edge Select bit 0 = low/high 1 = high/low
     T0CONbits.PSA = 0; // bit 3  Prescaler Assignment bit...0 = Prescaler is assigned to the Timer0
-    T0CONbits.T0PS = 0b111; // bits 2-0  PS2:PS0: Prescaler Rate Select bits
-    TMR0 = 0; // preset for timer register
+    T0CONbits.T0PS = 0b001; // 1:4 Prescaler
+    TMR0 = 0; // preset for timer register 250 ms (sample time)
 
+
+
+    //TRISCbits.RC0 = 0;
 
     while (1) {
         if (!connectionEstablished) {
