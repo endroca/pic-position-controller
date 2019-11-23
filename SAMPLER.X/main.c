@@ -5,7 +5,7 @@
 
 #define F_CPU _XTAL_FREQ/64
 #define Baud_value (((float)(F_CPU)/(float)baud_rate)-1)
-#define ENCODER_RESOLUTION 910
+#define ENCODER_RESOLUTION 895
 
 void USART_Init(long);
 unsigned char USART_RxChar();
@@ -24,7 +24,7 @@ void __interrupt() ISR(void) {
         int dataToSend = pulses;
         USART_TxChar(dataToSend & 0xFF);
         USART_TxChar((dataToSend >> 8) & 0xFF);
-        //PORTCbits.RC0 ^= 1;
+        PORTCbits.RC0 ^= 1;
 
         TMR0 = 0;
         INTCONbits.TMR0IF = 0;
@@ -67,7 +67,7 @@ void __interrupt() ISR(void) {
 }
 
 void main() {
-    OSCCON = 0x72; // Internal oscillator 8MHZ
+    //OSCCON = 0x72; // Internal oscillator 8MHZ
 
     USART_Init(9600); // Init USART 9600 bps
 
@@ -102,15 +102,15 @@ void main() {
 
 
     T0CONbits.TMR0ON = 1; // Set on timer 0
-    T0CONbits.T08BIT = 1; // Set 8 Bits
+    T0CONbits.T08BIT = 0; // Set 16 Bits
     T0CONbits.T0CS = 0; // bit 5  TMR0 Clock Source Select bit...0 = Internal Clock (CLKO) 1 = Transition on T0CKI pin
     T0CONbits.T0SE = 0; // bit 4 TMR0 Source Edge Select bit 0 = low/high 1 = high/low
     T0CONbits.PSA = 0; // bit 3  Prescaler Assignment bit...0 = Prescaler is assigned to the Timer0
-    T0CONbits.T0PS = 0b111; // 1:256 Prescaler
-    TMR0 = 0; // preset for timer register 15hz (sample time)
+    T0CONbits.T0PS = 0b001; // 1:4 Prescaler
+    TMR0 = 0; // preset for timer register 8hz (sample time)
 
 
-    //TRISCbits.RC0 = 0;
+    TRISCbits.RC0 = 0;
 
     while (1) {
         if (!connectionEstablished) {

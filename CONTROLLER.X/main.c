@@ -23,7 +23,8 @@
 #define SW_DECREMENT PORTDbits.RD3
 #define SW_INCREMENT PORTDbits.RD2
 
-#define ENCODER_RESOLUTION 910
+#define ENCODER_RESOLUTION 895
+#define ENCODER_DEGREES 4
 
 /*********************Proto-Type Declaration*****************************/
 
@@ -55,18 +56,18 @@ volatile unsigned char buffer;
  */
 volatile int encoderValue = 0;
 volatile bool enablePID = false;
-float SP = 50.00;
-float KP = 0.80;
+float SP = 90.00;
+float KP = 1.00;
 float KI = 0.00;
 float KD = 0.00;
 float ER = 0.00;
 
 float integrate = 0.00;
 float lastError = 0.00;
-float dt = 0.06;
+float dt = 0.125;
 int minCCPR1L = 115;
-int inertial = 19;
-int inertialReverse = 19;
+int inertial = 22;
+int inertialReverse = 22;
 char direction = 'd';
 
 bool stoppedMotor = false;
@@ -131,12 +132,11 @@ void __interrupt() ISR(void) {
 
                 if (enablePID) {
                     float error = (float) SP * ENCODER_RESOLUTION / 360 - encoderValue;
-                    /*
-                    if (abs(error) <= ENCODER_RESOLUTION / 360) {
-                        error = 0;
-                    }
-                     */
+                    error = round(error);
+
+                    //if (abs(error) > 1) {
                     CCPR1L = (int) PID(error);
+                    //}
                 }
             }
         }
@@ -147,7 +147,7 @@ void setPID(bool value) {
     enablePID = value;
     CCPR1L = 0;
     integrate = 0.00;
-    lastError = 0.00;
+    lastError = 0;
     stoppedMotor = false;
 }
 
@@ -174,11 +174,14 @@ float PID(float error) {
 
     action = (200 - minCCPR1L) * abs(action) / ENCODER_RESOLUTION + minCCPR1L;
 
-    if (stoppedMotor) {
-        action += inertial;
-    } else if (directionOfController != direction) {
-        action += inertialReverse;
+    if (error != 0) {
+        if (stoppedMotor) {
+            action += inertial;
+        } else if (directionOfController != direction) {
+            action += inertialReverse;
+        }
     }
+
 
     return action;
 }
