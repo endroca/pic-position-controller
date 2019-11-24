@@ -24,23 +24,23 @@
 #define SW_INCREMENT PORTDbits.RD2
 
 #define ENCODER_RESOLUTION 895
-#define ENCODER_DEGREES 4
+
 
 /*********************Proto-Type Declaration*****************************/
 
-void LCD_Init(); /*Initialize LCD*/
+void LCD_Init(void); /*Initialize LCD*/
 void LCD_Command(unsigned char); /*Send command to LCD*/
 void LCD_Char(unsigned char x); /*Send data to LCD*/
 void LCD_String(const char *); /*Display data string on LCD*/
 void LCD_String_xy(char, char, const char *);
-void LCD_Clear(); /*Clear LCD Screen*/
+void LCD_Clear(void); /*Clear LCD Screen*/
 void USART_Init(long);
-unsigned char USART_RxChar();
+unsigned char USART_RxChar(void);
 void USART_TxChar(unsigned char);
-void InitPWM();
+void InitPWM(void);
 void actions(int page);
 
-float PID(float error);
+int PID(int error);
 void setPID(bool value);
 
 /*************** PARAMS  *************/
@@ -52,28 +52,30 @@ volatile unsigned char buffer;
 
 
 /**
- * PID
+ * PID AND SETTINGS
  */
 volatile int encoderValue = 0;
+volatile int degrees = 0;
+
 volatile bool enablePID = false;
+volatile char direction = 'd';
+volatile bool stoppedMotor = false;
+
 float SP = 90.00;
 float KP = 1.00;
 float KI = 0.00;
 float KD = 0.00;
-float ER = 0.00;
+volatile float gainPlant = 1.00;
 
 float integrate = 0.00;
-float lastError = 0.00;
+int lastError = 0;
 float dt = 0.125;
 int minCCPR1L = 115;
 int inertial = 22;
 int inertialReverse = 22;
-char direction = 'd';
-
-bool stoppedMotor = false;
 
 // STRUCT OF CONTROLLER (FOR PID AND MANAGER PAGE)
-#define numberOfPages 10
+#define numberOfPages 11
 
 typedef struct {
     char* title;
@@ -91,8 +93,6 @@ CONTROLLER controller[numberOfPages];
 // BUFFER LCD
 char bufferLCD[16];
 char bufferFloat[10];
-// MANAGER CONTINOUS MODE IN BUTTON
-bool continous = false;
 
 // MANAGER PAGE
 int page = 0;
@@ -112,31 +112,30 @@ void __interrupt() ISR(void) {
                 buffer = receive;
                 toggle = true;
             } else {
-                int encoderValueReceive = (receive << 8) + (buffer << 0);
+                // Receive value of encoder
+                encoderValue = (receive << 8) + (buffer << 0);
 
-                if (encoderValueReceive > encoderValue) {
+                // Convert to degrees
+                int degreesReceive = gainPlant * (((long) 360 * encoderValue) / ENCODER_RESOLUTION);
+
+                if (degreesReceive > degrees) {
                     direction = 'd';
                 } else {
                     direction = 'i';
                 }
 
-                if (encoderValueReceive == encoderValue) {
+                if (degreesReceive == degrees) {
                     stoppedMotor = true;
                 } else {
                     stoppedMotor = false;
                 }
 
-                encoderValue = encoderValueReceive;
-
+                degrees = degreesReceive;
                 toggle = false;
 
                 if (enablePID) {
-                    float error = (float) SP * ENCODER_RESOLUTION / 360 - encoderValue;
-                    error = round(error);
-
-                    //if (abs(error) > 1) {
-                    CCPR1L = (int) PID(error);
-                    //}
+                    int error = SP - degrees;
+                    CCPR1L = PID(error);
                 }
             }
         }
@@ -148,10 +147,10 @@ void setPID(bool value) {
     CCPR1L = 0;
     integrate = 0.00;
     lastError = 0;
-    stoppedMotor = false;
+    stoppedMotor = true;
 }
 
-float PID(float error) {
+int PID(int error) {
     integrate = integrate + KI * error * dt;
     float derivate = KD * (error - lastError) / dt;
     lastError = error;
@@ -172,18 +171,21 @@ float PID(float error) {
         directionOfController = 'd';
     }
 
-    action = (200 - minCCPR1L) * abs(action) / ENCODER_RESOLUTION + minCCPR1L;
+    // Resizing PID output to PWM values (0 - 360) -> (minCCPR1L - 200)
+    action = (200 - minCCPR1L) * fabs(action) / 360 + minCCPR1L;
 
     if (error != 0) {
+        // check if the engine is stopped
         if (stoppedMotor) {
             action += inertial;
-        } else if (directionOfController != direction) {
+        }// check for a change of gyrus
+        else if (directionOfController != direction) {
             action += inertialReverse;
         }
     }
 
 
-    return action;
+    return (int) action;
 }
 
 int main(void) {
@@ -194,6 +196,10 @@ int main(void) {
     InitPWM();
     TRISCbits.RC0 = 0;
     TRISCbits.RC1 = 0;
+
+    // clockwise default
+    PORTCbits.RC0 = 0;
+    PORTCbits.RC1 = 1;
 
     // Initialize LCD to 5*8 matrix in 4-bit mode
     LCD_Init();
@@ -210,7 +216,7 @@ int main(void) {
     controller[0].value = SP;
     controller[0].max_increment = 5;
     controller[0].min_increment = 1;
-    controller[0].max = 359;
+    controller[0].max = 360;
     controller[0].min = 0;
     controller[0].continuousModeActivated = false;
     controller[0].increment = false;
@@ -295,6 +301,15 @@ int main(void) {
     controller[9].min = 0;
     controller[9].continuousModeActivated = false;
     controller[9].increment = false;
+    // GAIN of plant
+    controller[10].title = "Plant(k):";
+    controller[10].value = gainPlant;
+    controller[10].max_increment = 0.1;
+    controller[10].min_increment = 0.01;
+    controller[10].max = 10;
+    controller[10].min = 1;
+    controller[10].continuousModeActivated = false;
+    controller[10].increment = false;
 
 
     // Initialize USART
@@ -306,14 +321,24 @@ int main(void) {
 
         B4X_SW_nCLICK(SW_PREV) {
             B4X_SW_DEBOUNCE(SW_PREV);
-            page = page == 0 ? (numberOfPages - 1) : page--;
+
+            if (page == 0) {
+                page = numberOfPages - 1;
+            } else {
+                page--;
+            }
         }
 
         // NEXT PAGE
 
         B4X_SW_nCLICK(SW_NEXT) {
             B4X_SW_DEBOUNCE(SW_NEXT);
-            page = page == (numberOfPages - 1) ? 0 : page++;
+
+            if (page == (numberOfPages - 1)) {
+                page = 0;
+            } else {
+                page++;
+            }
         }
 
 
@@ -410,7 +435,7 @@ int main(void) {
         sprintf(bufferLCD, "%.1f", (float) encoderValue);
         LCD_String_xy(2, 0, bufferLCD);
 
-        sprintf(bufferLCD, "%.1f", ((float) encoderValue * 360 / ENCODER_RESOLUTION));
+        sprintf(bufferLCD, "%.1f", (float) degrees);
         LCD_String_xy(2, 6, bufferLCD);
 
     }
@@ -419,23 +444,23 @@ int main(void) {
 void actions(int page) {
     switch (page) {
         case 0:
-            SP = controller[0].value;
+            SP = controller[page].value;
             break;
         case 1:
-            KP = controller[1].value;
+            KP = controller[page].value;
             break;
         case 2:
-            KI = controller[2].value;
+            KI = controller[page].value;
             break;
         case 3:
-            KD = controller[3].value;
+            KD = controller[page].value;
             break;
         case 4:
-            CCPR1L = controller[4].value;
+            CCPR1L = controller[page].value;
             break;
         case 5:
         {
-            if (controller[5].value == 1) {
+            if (controller[page].value == 1) {
                 PORTCbits.RC0 = 1;
                 PORTCbits.RC1 = 0;
             } else {
@@ -445,16 +470,19 @@ void actions(int page) {
         }
             break;
         case 6:
-            setPID(controller[6].value);
+            setPID(controller[page].value);
             break;
         case 7:
-            minCCPR1L = controller[7].value;
+            minCCPR1L = controller[page].value;
             break;
         case 8:
-            inertial = controller[8].value;
+            inertial = controller[page].value;
             break;
         case 9:
-            inertialReverse = controller[8].value;
+            inertialReverse = controller[page].value;
+            break;
+        case 10:
+            gainPlant = controller[page].value;
             break;
     };
 
@@ -462,6 +490,7 @@ void actions(int page) {
 }
 
 void InitPWM() {
+
     TRISCbits.TRISC2 = 0; /* Set CCP1 pin as output for PWM out */
 
     // x=(16000000/(5000*4*4) - 1)
@@ -481,6 +510,7 @@ void InitPWM() {
 /****************************Functions********************************/
 
 void LCD_Init() {
+
     LCD_Port = 0; /*PORT as Output Port*/
     __delay_ms(15); /*15ms,16x2 LCD Power on delay*/
     LCD_Command(0x02); /*send for initialization of LCD 
@@ -493,6 +523,7 @@ void LCD_Init() {
 }
 
 void LCD_Command(unsigned char cmd) {
+
     ldata = (ldata & 0x0f) | (0xF0 & cmd); /*Send higher nibble of command first to PORT*/
     RS = 0; /*Command Register is selected i.e.RS=0*/
     EN = 1; /*High-to-low pulse on Enable pin to latch data*/
@@ -507,6 +538,7 @@ void LCD_Command(unsigned char cmd) {
 }
 
 void LCD_Char(unsigned char dat) {
+
     ldata = (ldata & 0x0f) | (0xF0 & dat); /*Send higher nibble of data first to PORT*/
     RS = 1; /*Data Register is selected*/
     EN = 1; /*High-to-low pulse on Enable pin to latch data*/
@@ -522,6 +554,7 @@ void LCD_Char(unsigned char dat) {
 
 void LCD_String(const char *msg) {
     while ((*msg) != 0) {
+
         LCD_Char(*msg);
         msg++;
     }
@@ -545,6 +578,7 @@ void LCD_String_xy(char row, char pos, const char *msg) {
 
         case 4:
             location = (0xD4) | ((pos) & 0x0f);
+
             break;
     }
 
@@ -552,12 +586,14 @@ void LCD_String_xy(char row, char pos, const char *msg) {
     LCD_String(msg);
 }
 
-void LCD_Clear() {
+void LCD_Clear(void) {
+
     LCD_Command(0x01); /*clear display screen*/
     __delay_ms(3);
 }
 
 void USART_Init(long baud_rate) {
+
     float temp;
     TRISC6 = 0; /* Make Tx pin as output*/
     TRISC7 = 1; /* Make Rx pin as input*/
@@ -573,6 +609,7 @@ void USART_Init(long baud_rate) {
 
 unsigned char USART_RxChar() {
     while (!RCIF); //Wait till RCREG is full
+
     return RCREG; //Return value in received data
 }
 
