@@ -307,7 +307,7 @@ int main(void) {
     controller[10].max_increment = 0.1;
     controller[10].min_increment = 0.01;
     controller[10].max = 10;
-    controller[10].min = 1;
+    controller[10].min = 0.1;
     controller[10].continuousModeActivated = false;
     controller[10].increment = false;
 
